@@ -1,69 +1,78 @@
-"""
-app.py
+# src/app.py
 
-Streamlit dashboard for exploring credit risk predictions.
-"""
-
-import streamlit as st
-import pandas as pd
-import numpy as np
 import joblib
-from pathlib import Path
-
-ARTIFACT_DIR = Path("artifacts")
-MODEL_PATH = ARTIFACT_DIR / "credit_risk_model.joblib"
-META_PATH = ARTIFACT_DIR / "model_metadata.joblib"
+import numpy as np
+import pandas as pd
+import streamlit as st
 
 
 @st.cache_resource
 def load_model():
-    model = joblib.load(MODEL_PATH)
-    metadata = joblib.load(META_PATH)
-    return model, metadata
+    data = joblib.load("artifacts/credit_default_model.joblib")
+    return data["model"], data["numeric_features"], data["categorical_features"]
+
+
+def get_policy_thresholds(tolerance: str):
+    """
+    Returns (approve, review) thresholds for default probability.
+    Above 'review' -> reject.
+    """
+    if tolerance == "Conservative":
+        return 0.05, 0.15
+    elif tolerance == "Balanced":
+        return 0.08, 0.22
+    else:  # Aggressive
+        return 0.12, 0.30
 
 
 def main():
-    st.title("Credit Risk Default Model — Jeremiah Tshinyama")
-    st.write(
-        "This dashboard uses a machine learning model trained on historical loan data "
-        "to estimate the probability of default at origination."
+    st.set_page_config(
+        page_title="Credit Risk Default Model – Jeremiah Tshinyama",
+        layout="centered",
     )
 
-    if not MODEL_PATH.exists() or not META_PATH.exists():
+    st.title("Credit Risk Default Model")
+    st.caption("Built by **Jeremiah Tshinyama**")
+
+    st.markdown(
+        """
+This app estimates the probability that a personal loan will default based on
+borrower and loan characteristics.  
+Use the controls in the sidebar to adjust inputs and risk tolerance.
+        """
+    )
+
+    # Load model
+    try:
+        model, numeric_features, categorical_features = load_model()
+    except Exception as e:
         st.error(
-            "Model artifacts not found. Please run `train_models.py` first to train and save the model."
+            "Model not found. Please train the model first by running "
+            "`python src/train_models.py --data_path data/your_loans.csv` "
+            "from the project root."
         )
+        st.exception(e)
         return
 
-    model, metadata = load_model()
-    columns = metadata["columns"]
-    auc = metadata.get("auc", None)
+    # Sidebar: risk tolerance + inputs
+    st.sidebar.header("Lender Settings")
 
-    if auc is not None:
-        st.metric("Validation ROC-AUC", f"{auc:.3f}")
+    tolerance = st.sidebar.selectbox(
+        "Risk tolerance profile",
+        ["Conservative", "Balanced", "Aggressive"],
+        index=1,
+        help="Conservative = fewer approvals, lower loss risk. Aggressive = more approvals, higher loss risk.",
+    )
 
-    st.subheader("Input Borrower & Loan Characteristics")
+    approve_thr, review_thr = get_policy_thresholds(tolerance)
 
-    inputs = {}
-    for col in columns:
-        # Simple heuristic: numeric vs categorical
-        if col.lower().endswith(("amt", "inc", "dti", "int_rate", "installment")) or col in ["loan_amnt", "annual_inc"]:
-            val = st.number_input(col, value=0.0)
-            inputs[col] = val
-        else:
-            txt = st.text_input(col, value="")
-            inputs[col] = txt
+    st.sidebar.markdown("### Borrower & Loan Inputs")
 
-    if st.button("Predict Default Probability"):
-        X = pd.DataFrame([inputs], columns=columns)
-        proba = model.predict_proba(X)[:, 1][0]
-        st.metric("Estimated Probability of Default", f"{proba:.2%}")
+    # Default input values (generic, adjust as needed)
+    loan_amnt = st.sidebar.number_input("Loan amount ($)", min_value=500.0, max_value=80000.0, value=15000.0, step=500.0)
+    int_rate = st.sidebar.number_input("Interest rate (%)", min_value=5.0, max_value=35.0, value=14.0, step=0.5)
+    annual_inc = st.sidebar.number_input("Annual income ($)", min_value=10000.0, max_value=300000.0, value=65000.0, step=5000.0)
+    dti = st.sidebar.number_input("Debt-to-income ratio (%)", min_value=0.0, max_value=60.0, value=18.0, step=1.0)
+    revol_util = st.sidebar.number_input("Revolving utilization (%)", min_value=0.0, max_value=150.0, value=45.0, step=1.0)
+    open_acc = st.sidebar.number_input("Open credit lines", min_value=0, max_value
 
-        st.write(
-            "You can extend this app by adding feature importance plots, "
-            "policy scenarios, or segment-level analytics."
-        )
-
-
-if __name__ == "__main__":
-    main()
