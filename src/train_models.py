@@ -2,176 +2,145 @@
 
 import argparse
 import os
-
 import joblib
-import numpy as np
 import pandas as pd
-from sklearn.compose import ColumnTransformer
-from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import train_test_split
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
-from sklearn.impute import SimpleImputer
-from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report
+
+EXPECTED_NUMERIC = [
+    "loan_amnt",
+    "int_rate",
+    "annual_inc",
+    "dti",
+    "revol_util",
+    "open_acc",
+    "total_acc",
+]
+
+EXPECTED_CATEGORICAL = [
+    "term",
+    "grade",
+    "home_ownership",
+    "purpose",
+    "verification_status",
+]
+
+TARGET_COLUMN = "loan_status"
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Train a credit risk default model on loan-level data."
-    )
-    parser.add_argument(
-        "--data_path",
-        type=str,
-        required=True,
-        help="Path to CSV file containing loan-level data.",
-    )
-    parser.add_argument(
-        "--output_dir",
-        type=str,
-        default="artifacts",
-        help="Directory to save the trained model.",
-    )
-    return parser.parse_args()
+def load_and_prepare_data(path: str) -> pd.DataFrame:
+    print(f"📥 Loading data from: {path}")
+    df = pd.read_csv(path, low_memory=False)
 
+    print(f"✅ Loaded shape: {df.shape}")
 
-def create_default_label(df: pd.DataFrame) -> pd.Series:
-    """
-    Try to derive a binary default label.
-    Assumes LendingClub-style 'loan_status' if present, otherwise
-    expects a 'default' column already encoded as 0/1.
-    """
-    if "loan_status" in df.columns:
-        status = df["loan_status"].astype(str)
-
-        bad_statuses = [
-            "Charged Off",
-            "Default",
-            "Late (31-120 days)",
-            "Late (16-30 days)",
-            "Does not meet the credit policy. Status:Charged Off",
-        ]
-        good_statuses = [
-            "Fully Paid",
-            "Current",
-            "In Grace Period",
-            "Does not meet the credit policy. Status:Fully Paid",
-        ]
-
-        y = status.apply(
-            lambda s: 1
-            if any(bad.lower() in s.lower() for bad in bad_statuses)
-            else (0 if any(good.lower() in s.lower() for good in good_statuses) else np.nan)
-        )
-        y = y.dropna()
-        # Align df to y index
-        df = df.loc[y.index]
-        return df, y.astype(int)
-
-    elif "default" in df.columns:
-        y = df["default"].astype(int)
-        return df, y
-    else:
+    if TARGET_COLUMN not in df.columns:
         raise ValueError(
-            "Could not find 'loan_status' or 'default' column. "
-            "Please add one or adjust create_default_label()."
+            f"'{TARGET_COLUMN}' column not found. "
+            f"Available columns: {list(df.columns)}"
         )
 
-
-def main():
-    args = parse_args()
-
-    # Load data
-    df = pd.read_csv(args.data_path)
-
-    # Define feature columns we care about (adjust to match your CSV)
-    numeric_features = [
-        "loan_amnt",
-        "int_rate",
-        "annual_inc",
-        "dti",
-        "revol_util",
-        "open_acc",
-        "total_acc",
+    # Make binary target: 1 = default / bad, 0 = fully paid / good
+    df = df.copy()
+    bad_statuses = [
+        "Charged Off",
+        "Default",
+        "Does not meet the credit policy. Status:Charged Off",
+        "Late (31-120 days)",
+        "Late (16-30 days)",
     ]
-    categorical_features = [
-        "term",
-        "grade",
-        "home_ownership",
-        "purpose",
-        "verification_status",
-    ]
+    df["defaulted"] = df[TARGET_COLUMN].isin(bad_statuses).astype(int)
 
-    missing = [col for col in numeric_features + categorical_features if col not in df.columns]
-    if missing:
+    # Pick the feature columns that actually exist in this CSV
+    numeric_features = [c for c in EXPECTED_NUMERIC if c in df.columns]
+    categorical_features = [c for c in EXPECTED_CATEGORICAL if c in df.columns]
+
+    if not numeric_features and not categorical_features:
         raise ValueError(
-            f"Your data is missing these required columns: {missing}. "
-            f"Either add them or edit train_models.py to match your dataset."
+            "None of the expected feature columns were found.\n"
+            f"Expected numeric: {EXPECTED_NUMERIC}\n"
+            f"Expected categorical: {EXPECTED_CATEGORICAL}\n"
+            f"Actual: {list(df.columns)}"
         )
 
-    # Create target
-    df, y = create_default_label(df)
+    used_cols = numeric_features + categorical_features + ["defaulted"]
+    df = df[used_cols].dropna()
 
-    X = df[numeric_features + categorical_features].copy()
+    print(f"🧹 After selecting columns & dropping NAs: {df.shape}")
+    return df, numeric_features, categorical_features
 
-    # Preprocessing
-    numeric_transformer = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="median")),
-            ("scaler", StandardScaler()),
-        ]
-    )
 
-    categorical_transformer = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="most_frequent")),
-            ("onehot", OneHotEncoder(handle_unknown="ignore")),
-        ]
-    )
+def train_model(df: pd.DataFrame, numeric_features, categorical_features):
+    X = df.drop(columns=["defaulted"])
+    y = df["defaulted"]
 
     preprocessor = ColumnTransformer(
         transformers=[
-            ("num", numeric_transformer, numeric_features),
-            ("cat", categorical_transformer, categorical_features),
+            ("num", "passthrough", numeric_features),
+            ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_features),
         ]
     )
 
-    # Classifier
-    clf = GradientBoostingClassifier(random_state=42)
+    clf = RandomForestClassifier(
+        n_estimators=300,
+        max_depth=10,
+        random_state=42,
+        n_jobs=-1,
+    )
 
     model = Pipeline(
         steps=[
-            ("preprocess", preprocessor),
-            ("clf", clf),
+            ("preprocessor", preprocessor),
+            ("classifier", clf),
         ]
     )
 
-    # Train / test split
+    print("✂️ Splitting train / test...")
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
 
+    print("🚂 Training model...")
     model.fit(X_train, y_train)
 
-    # Evaluate
-    y_proba = model.predict_proba(X_test)[:, 1]
-    roc_auc = roc_auc_score(y_test, y_proba)
-    print(f"Validation ROC-AUC: {roc_auc:.3f}")
+    print("📊 Evaluation on test set:")
+    y_pred = model.predict(X_test)
+    print(classification_report(y_test, y_pred))
 
-    # Save model
-    os.makedirs(args.output_dir, exist_ok=True)
-    model_path = os.path.join(args.output_dir, "credit_default_model.joblib")
+    return model
 
-    joblib.dump(
-        {
-            "model": model,
-            "numeric_features": numeric_features,
-            "categorical_features": categorical_features,
-        },
-        model_path,
-    )
-    print(f"Saved model to {model_path}")
+
+def main(data_path: str, output_path: str):
+    df, num_feats, cat_feats = load_and_prepare_data(data_path)
+    model = train_model(df, num_feats, cat_feats)
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    payload = {
+        "model": model,
+        "numeric_features": num_feats,
+        "categorical_features": cat_feats,
+    }
+    joblib.dump(payload, output_path)
+    print(f"💾 Saved model artifact to: {output_path}")
 
 
 if __name__ == "__main__":
-    main()
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--data_path",
+        type=str,
+        default="data/loan.csv",
+        help="Path to the LendingClub CSV file",
+    )
+    parser.add_argument(
+        "--output_path",
+        type=str,
+        default="artifacts/credit_default_model.joblib",
+        help="Where to save the trained model",
+    )
+    args = parser.parse_args()
+    main(args.data_path, args.output_path)
