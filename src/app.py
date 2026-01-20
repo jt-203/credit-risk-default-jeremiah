@@ -17,7 +17,6 @@ st.write("Predict whether a loan is likely to default based on borrower features
 
 st.sidebar.header("Loan Application")
 
-# Build dynamic form from expected features
 user_input = {}
 
 for col in numeric_feats:
@@ -26,7 +25,6 @@ for col in numeric_feats:
 for col in categorical_feats:
     user_input[col] = st.sidebar.text_input(col, value="")
 
-# Predict
 if st.sidebar.button("Predict Default Risk"):
     df_input = pd.DataFrame([user_input])
     prediction = model.predict(df_input)[0]
@@ -38,4 +36,3 @@ if st.sidebar.button("Predict Default Risk"):
         st.error(f"⚠️ High Risk of Default (Probability: {proba:.2f})")
     else:
         st.success(f"✅ Low Risk of Default (Probability: {proba:.2f})")
-
