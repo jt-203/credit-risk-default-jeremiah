@@ -19,7 +19,7 @@ This project:
 
 ## 📊 Demo
 
-You can interact with the live dashboard here:  
+You can interact with the live dashboard here:[ https://credit-risk-default-jeremiah.streamlit.app/ ]
 (If you deploy it via Streamlit Cloud or similar, paste the deployed link here)
 
 ---
